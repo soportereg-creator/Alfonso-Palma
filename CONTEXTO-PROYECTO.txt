@@ -1,0 +1,270 @@
+================================================================================
+INFILE PORTAL — NOTA DE CONTEXTO PARA IA
+================================================================================
+Idioma de la UI y de esta nota: español.
+Proyecto: infile-portal
+Fecha de esta nota: 29 de septiembre de 2026
+
+Lee este archivo ANTES de editar código. Resume el propósito y las reglas;
+no reinventes la arquitectura si no te lo piden.
+
+
+--------------------------------------------------------------------------------
+1) PARA QUÉ SIRVE ESTE PROYECTO
+--------------------------------------------------------------------------------
+
+Es un portal interno de CONSULTAS de facturación electrónica de INFILE
+para tres países: Panamá, República Dominicana y Costa Rica.
+
+NO es un emisor de facturas.
+NO es un ERP.
+NO es un dashboard de clientes finales.
+
+SÍ es una herramienta para:
+  - Probar APIs de INFILE / PAC / Hacienda / DGII desde el navegador.
+  - Ver la respuesta JSON (o descargar PDF) sin Postman.
+  - Centralizar en una sola app los servicios multi-país.
+
+Usuario típico: equipo INFILE (soporte, QA, implementación, diseño).
+El dueño de este workspace es Alfonso (Designer). Prefiere iterar en código.
+
+
+--------------------------------------------------------------------------------
+2) QUÉ DEBE HACER LA IA
+--------------------------------------------------------------------------------
+
+Objetivo por defecto:
+  Ayudar a mantener, mejorar y extender este portal de consultas
+  sin romper el flujo actual (home → país → ServiceCard → API proxy → JSON/PDF).
+
+Cuando te pidan un cambio:
+  1. Entiende si es UI, proxy de API, o ambos.
+  2. Reutiliza components/ServiceCard.tsx y los tokens de app/globals.css.
+  3. Si añades un servicio nuevo: página del país + ruta en app/api/...
+     El browser NUNCA debe llamar a las APIs externas directo (CORS / keys).
+  4. Mantén el español en la interfaz.
+  5. No extraigas un design system nuevo ni instales librerías de UI
+     salvo que te lo pidan.
+  6. No hagas commit ni push a menos que te lo pidan.
+  7. Si tocas UI, verifica el flujo (home, el país afectado, execute, error).
+
+No hagas esto salvo petición explícita:
+  - Autenticación de usuarios del portal.
+  - Refactors masivos de CSS.
+  - Cambiar Next.js App Router a Pages Router.
+  - Llamadas fetch desde el cliente hacia Heroku/DGII/Hacienda.
+  - Exponer o copiar secretos en el chat.
+
+Next.js 16 puede diferir de tu entrenamiento. Antes de APIs nuevas de Next,
+revisa node_modules/next/dist/docs/ (lo indica AGENTS.md).
+
+
+--------------------------------------------------------------------------------
+3) STACK
+--------------------------------------------------------------------------------
+
+  Next.js 16.3 (App Router)
+  React 19
+  TypeScript (strict)
+  CSS global (sin Tailwind, sin componente library)
+  Alias: @/* → raíz del repo
+  Deploy pensado para Vercel (vercel.json)
+
+Scripts:
+  npm install
+  npm run dev     → http://localhost:3000
+  npm run build
+  npm run start
+  npm run lint
+
+Requisito: Node.js 18 o superior.
+
+
+--------------------------------------------------------------------------------
+4) CÓMO ESTÁ ARMADO (ARQUITECTURA)
+--------------------------------------------------------------------------------
+
+Flujo:
+
+  [Página país, 'use client']
+        │  fetch('/api/pais/servicio')
+        ▼
+  [Route Handler Next.js: app/api/.../route.ts]
+        │  fetch() server-side hacia API real
+        ▼
+  [INFILE PAC / DGII / Hacienda CR / gateway staging]
+        │
+        ▼
+  JSON o PDF de vuelta al ServiceCard
+
+Por qué hay proxies:
+  Evitar CORS, reenviar headers/tokens, y (en RD) poner la API key en servidor.
+
+Componente clave:
+  components/ServiceCard.tsx
+    - Campos dinámicos
+    - GET o POST
+    - apiPath interno
+    - extraHeaders (Panamá)
+    - authToken Bearer (Costa Rica)
+    - isBinary para PDF
+    - Muestra status, tiempo, JSON copiable
+
+El header/nav/footer está DUPLICADO en:
+  app/page.tsx
+  app/panama/page.tsx
+  app/dominicana/page.tsx
+  app/costarica/page.tsx
+Si extraes layout compartido, hazlo con cuidado y verifica las 4 pantallas.
+
+
+--------------------------------------------------------------------------------
+5) RUTAS DE UI
+--------------------------------------------------------------------------------
+
+  /              Home: 3 cards (Panamá, RD, Costa Rica)
+  /panama        PAC: credenciales, Test/Prod, RUC, anulación, CUFE, link PDF
+  /dominicana    DGII: RNC, mantenimiento, estatus, ambiente ECF
+  /costarica     Hacienda cédula + login INFILE + documento + PDF
+
+
+--------------------------------------------------------------------------------
+6) RUTAS API (PROXIES) Y DESTINOS
+--------------------------------------------------------------------------------
+
+PANAMÁ  (query ?env=test|prod, headers usuario-api, llave-api, llave-firma)
+  POST /api/panama/ruc
+       → infile-pac-unificado.herokuapp.com
+         /api/v1/consultas/unificado/{env}/json/ruc_dv
+
+  POST /api/panama/anulacion
+       → .../api/v1/eventos/unificado/{env}/json/anulacion
+         Body: { cufe, motivo_anulacion }
+         CUIDADO: esto dispara un evento de negocio, no es solo lectura.
+
+  POST /api/panama/cufe
+       → .../api/v1/consultas/unificado/{env}/json/factura
+
+  PDF Panamá NO pasa por /api: el cliente arma la URL del certificador:
+    test: https://certificador-test.infilepac.com/pac/v1/dev/descargas/pdf/{cufe}
+    prod: https://certificador.infilepac.com/pac/v1/dev/descargas/pdf/{cufe}
+
+REPÚBLICA DOMINICANA
+  GET /api/dominicana/rnc?rnc=
+       → api-dgii.dominicantechnology.com/api/v1/rnc/{rnc}
+
+  GET /api/dominicana/mantenimiento
+       → statusecf.dgii.gov.do .../ObtenerVentanasMantenimiento
+         Header authorization = DGII_API_KEY
+
+  GET /api/dominicana/estatus
+       → .../ObtenerEstatus
+
+  GET /api/dominicana/ambiente?ambiente=1
+       → .../VerificarEstado?ambiente=
+
+COSTA RICA
+  GET /api/costarica/cedula?identificacion=
+       → api.hacienda.go.cr/fe/ae  (público, sin token INFILE)
+
+  POST /api/costarica/login
+       Body: { prefijo, llave }
+       → api-gateway-staging.infile.com/api/cr/v1/login
+         Extrae token (token | access_token | Bearer | bearer)
+
+  GET /api/costarica/documento?uuid=   + Authorization Bearer
+       → api-gateway-staging.infile.com/api/cr/v1/consultar/{uuid}
+
+  GET /api/costarica/pdf?uuid=         + Authorization Bearer
+       → report-engine-regional-staging.infile.com
+         /api/cr/v1/documento/{uuid}?tipo_documento=pdf
+         Respuesta: application/pdf
+
+Costa Rica está cableada a STAGING. Panamá sí tiene Test/Prod.
+
+
+--------------------------------------------------------------------------------
+7) DISEÑO / UI
+--------------------------------------------------------------------------------
+
+Archivo de verdad: app/globals.css
+  Tema oscuro (#070711)
+  Tokens por país:
+    Panamá     --panama-primary  #00c6fb
+    Dominicana --rd-primary      #4f7eff
+    Costa Rica --cr-primary      #00e676
+  Fuentes: Inter + JetBrains Mono (Google Fonts)
+  Cards, badges GET/POST, env toggle, token-banner, botones execute
+
+Patrón visual: header con logo INFILE Portal → hero del país → grids de
+ServiceCard → footer.
+
+Alfonso es designer: respeta spacing, radios, colores de país y el look
+actual. No “modernices” con otro estilo si no te lo piden.
+
+
+--------------------------------------------------------------------------------
+8) ARCHIVOS IMPORTANTES
+--------------------------------------------------------------------------------
+
+  package.json
+  app/layout.tsx, app/globals.css, app/page.tsx
+  app/panama/page.tsx
+  app/dominicana/page.tsx
+  app/costarica/page.tsx
+  components/ServiceCard.tsx
+  app/api/**/route.ts
+  .env.local          DGII_API_KEY (no commitear; está en .gitignore)
+  AGENTS.md           aviso de Next.js 16
+  CONTEXTO-PROYECTO.txt  este archivo
+
+
+--------------------------------------------------------------------------------
+9) SECRETOS Y RIESGOS (LA IA DEBE CUIDAR ESTO)
+--------------------------------------------------------------------------------
+
+  - Las rutas /api/* NO tienen login propio. Quien tenga la URL del portal
+    puede usar los proxies.
+  - Panamá: credenciales PAC van por defecto en el ESTADO del cliente
+    (app/panama/page.tsx). No las imprimas ni las copies a docs nuevos.
+  - RD: DGII_API_KEY en .env.local, con fallback hardcodeado en
+    app/api/dominicana/{estatus,ambiente,mantenimiento}/route.ts
+    Lo correcto es solo process.env.DGII_API_KEY, sin fallback en código.
+  - No subas .env.local a git público.
+  - Evento de anulación en Panamá es destructivo a nivel de comprobante.
+
+Si te piden “hacer el proyecto más seguro”, prioriza:
+  quitar keys del cliente y del código, usar env vars, no abrir prod
+  sin confirmación, y no loguear tokens.
+
+
+--------------------------------------------------------------------------------
+10) CÓMO INSTALAR EN OTRA MÁQUINA
+--------------------------------------------------------------------------------
+
+  1. Descomprimir el zip (carpeta infile-portal).
+  2. Tener Node.js 18+.
+  3. En la carpeta del proyecto:
+       npm install
+       npm run dev
+  4. Abrir http://localhost:3000
+  5. Abrir ESTE archivo (CONTEXTO-PROYECTO.txt) y dárselo a la IA
+     o @-mencionarlo en el chat.
+
+node_modules y .next NO van en el zip; se regeneran.
+
+
+--------------------------------------------------------------------------------
+11) QUÉ NO ES ESTE PROYECTO (PARA NO DESVIARSE)
+--------------------------------------------------------------------------------
+
+  No hay base de datos.
+  No hay usuarios ni roles.
+  No hay i18n (solo español).
+  No hay tests automatizados.
+  README.md es el default de create-next-app; esta nota es la fuente
+  de verdad de negocio.
+
+================================================================================
+FIN DE LA NOTA
+================================================================================
